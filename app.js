@@ -39,7 +39,7 @@
   function saveUndo() {
     undoSnapshot = {
       nodes: state.nodes.map(function (n) {
-        return { id: n.id, x: n.x, y: n.y, color: n.color, clamped: n.clamped };
+        return { id: n.id, x: n.x, y: n.y, color: n.color, clamped: n.clamped, hidden: n.hidden };
       }),
       edges: new Set(state.edges),
       nextNodeId: state.nextNodeId,
@@ -182,8 +182,9 @@
       // Stroke
       ctx.lineWidth = isSelected ? 3 : 2;
       ctx.strokeStyle = isSelected ? COLORS.selected : COLORS.border;
-      ctx.setLineDash([]);
+      ctx.setLineDash(node.hidden ? [4, 4] : []);
       ctx.stroke();
+      ctx.setLineDash([]);
 
       // Clamp indicator: emoji inside the node
       if (node.clamped) {
@@ -236,6 +237,7 @@
       y: y,
       color: 0,
       clamped: false,
+      hidden: false,
     };
     state.nodes.push(node);
     nodeMap.set(node.id, node);
@@ -289,6 +291,21 @@
     state.selection.forEach(function (id) {
       var node = getNodeById(id);
       if (node) node.clamped = newValue;
+    });
+    render();
+  }
+
+  function toggleHideSelected() {
+    saveUndo();
+    var allHidden = true;
+    state.selection.forEach(function (id) {
+      var node = getNodeById(id);
+      if (node && !node.hidden) allHidden = false;
+    });
+    var newValue = !allHidden;
+    state.selection.forEach(function (id) {
+      var node = getNodeById(id);
+      if (node) node.hidden = newValue;
     });
     render();
   }
@@ -436,6 +453,9 @@
       case 'w':
         e.preventDefault();
         toggleConnectSelected();
+        break;
+      case 'e':
+        toggleHideSelected();
         break;
       case 'r':
         e.preventDefault();
