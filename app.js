@@ -39,6 +39,46 @@
     updateColorIndex: 0, // which color to update next in Glauber dynamics
   };
 
+  // Running statistics: ring buffer of last 30 spin snapshots
+  var STATS_WINDOW = 30;
+  var statsHistory = []; // array of { nodeSpins: Map<id, spin>, edgeProducts: Map<edgeKey, product> }
+
+  function recordSnapshot() {
+    var nodeSpins = new Map();
+    for (var i = 0; i < state.nodes.length; i++) {
+      nodeSpins.set(state.nodes[i].id, state.nodes[i].spin);
+    }
+    var edgeProducts = new Map();
+    state.edges.forEach(function (key) {
+      var pair = parseEdge(key);
+      var a = getNodeById(pair[0]);
+      var b = getNodeById(pair[1]);
+      if (a && b) edgeProducts.set(key, a.spin * b.spin);
+    });
+    statsHistory.push({ nodeSpins: nodeSpins, edgeProducts: edgeProducts });
+    if (statsHistory.length > STATS_WINDOW) statsHistory.shift();
+  }
+
+  function nodeAvg(nodeId) {
+    if (statsHistory.length === 0) return null;
+    var sum = 0, count = 0;
+    for (var i = 0; i < statsHistory.length; i++) {
+      var v = statsHistory[i].nodeSpins.get(nodeId);
+      if (v !== undefined) { sum += v; count++; }
+    }
+    return count > 0 ? sum / count : null;
+  }
+
+  function edgeAvg(key) {
+    if (statsHistory.length === 0) return null;
+    var sum = 0, count = 0;
+    for (var i = 0; i < statsHistory.length; i++) {
+      var v = statsHistory[i].edgeProducts.get(key);
+      if (v !== undefined) { sum += v; count++; }
+    }
+    return count > 0 ? sum / count : null;
+  }
+
   var nodeMap = new Map();
   var undoSnapshot = null;
   var entryMode = false;
@@ -314,6 +354,7 @@
     drawEdges();
     drawNodes();
     if (state.display === 'MODEL' && !entryMode) drawModelLabels();
+    if (state.display === 'STATE' && statsHistory.length > 0) drawStateStats();
     drawLasso();
     updateHUD();
     updateColoringStatus();
@@ -384,12 +425,12 @@
         ctx.fill();
       }
 
-      // Clamp indicator
+      // Clamp indicator (small, down-left)
       if (node.clamped) {
-        ctx.font = (NODE_RADIUS) + 'px serif';
+        ctx.font = Math.round(NODE_RADIUS * 0.7) + 'px serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText('\u{1F5DC}', node.x, node.y + 1);
+        ctx.fillText('\u{1F5DC}', node.x - 4, node.y + 5);
       }
 
       // Node number to the left
@@ -458,6 +499,42 @@
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(formatSig(node.bias), pos.x, pos.y);
+    }
+  }
+
+  function drawStateStats() {
+    var statsColor = '#885522';
+
+    // Edge correlation labels
+    var edgeLabels = [];
+    state.edges.forEach(function (key) {
+      var avg = edgeAvg(key);
+      if (avg === null) return;
+      var pos = edgeLabelPos(key);
+      if (!pos) return;
+      edgeLabels.push({ x: pos.x, y: pos.y, text: formatSig(avg) });
+    });
+
+    separateLabels(edgeLabels, 16);
+
+    ctx.font = '10px monospace';
+    ctx.fillStyle = statsColor;
+
+    for (var i = 0; i < edgeLabels.length; i++) {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(edgeLabels[i].text, edgeLabels[i].x, edgeLabels[i].y);
+    }
+
+    // Node average labels to the right
+    for (var i = 0; i < state.nodes.length; i++) {
+      var node = state.nodes[i];
+      var avg = nodeAvg(node.id);
+      if (avg === null) continue;
+      var pos = biasLabelPos(node);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(formatSig(avg), pos.x, pos.y);
     }
   }
 
@@ -643,6 +720,23 @@
 
     // Advance to next color
     state.updateColorIndex = (color + 1) % state.colorCount;
+    recordSnapshot();
+    render();
+  }
+
+  function randomizeSpins() {
+    saveUndo();
+    for (var i = 0; i < state.nodes.length; i++) {
+      if (!state.nodes[i].clamped) {
+        state.nodes[i].spin = Math.random() < 0.5 ? 1 : -1;
+      }
+    }
+    recordSnapshot();
+    render();
+  }
+
+  function wipeStats() {
+    statsHistory = [];
     render();
   }
 
@@ -838,6 +932,16 @@
         if (state.display === 'STATE') {
           e.preventDefault();
           glauberUpdate();
+        }
+        break;
+      case '!':
+        if (state.display === 'STATE') {
+          randomizeSpins();
+        }
+        break;
+      case '@':
+        if (state.display === 'STATE') {
+          wipeStats();
         }
         break;
       case 'Escape':
