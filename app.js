@@ -25,10 +25,11 @@
   // --- State ---
   var state = {
     mode: 'NEW_NODE',
-    nodes: [],            // { id, x, y, color: 0..colorCount-1, clamped: bool }
+    nodes: [],            // { id, x, y, color: 0..colorCount-1, spin: +1|-1, clamped, hidden }
     edges: new Set(),
     nextNodeId: 0,
     colorCount: 2,
+    display: 'COLORS',   // 'COLORS' | 'STATE'
     selection: new Set(),
     lasso: { active: false, points: [] },
   };
@@ -39,7 +40,7 @@
   function saveUndo() {
     undoSnapshot = {
       nodes: state.nodes.map(function (n) {
-        return { id: n.id, x: n.x, y: n.y, color: n.color, clamped: n.clamped, hidden: n.hidden };
+        return { id: n.id, x: n.x, y: n.y, color: n.color, spin: n.spin, clamped: n.clamped, hidden: n.hidden };
       }),
       edges: new Set(state.edges),
       nextNodeId: state.nextNodeId,
@@ -176,7 +177,11 @@
       ctx.arc(node.x, node.y, NODE_RADIUS, 0, Math.PI * 2);
 
       // Fill
-      ctx.fillStyle = PALETTE[node.color] || PALETTE[0];
+      if (state.display === 'STATE') {
+        ctx.fillStyle = node.spin === 1 ? '#ffffff' : '#1a1a1a';
+      } else {
+        ctx.fillStyle = PALETTE[node.color] || PALETTE[0];
+      }
       ctx.fill();
 
       // Stroke
@@ -193,6 +198,13 @@
         ctx.textBaseline = 'middle';
         ctx.fillText('\u{1F5DC}', node.x, node.y + 1);
       }
+
+      // Node number to the left
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = COLORS.border;
+      ctx.fillText(String(i + 1), node.x - NODE_RADIUS - 4, node.y);
     }
   }
 
@@ -225,6 +237,18 @@
         spans[i].classList.remove('mode-active');
       }
     }
+    var dspans = document.querySelectorAll('[data-display]');
+    for (var i = 0; i < dspans.length; i++) {
+      if (dspans[i].getAttribute('data-display') === state.display) {
+        dspans[i].classList.add('mode-active');
+      } else {
+        dspans[i].classList.remove('mode-active');
+      }
+    }
+    // Update q label based on display mode
+    var qLabel = document.getElementById('q-label');
+    if (qLabel) qLabel.textContent = state.display === 'STATE' ? 'q — State' : 'q — Color';
+
     canvas.style.cursor = state.mode === 'NEW_NODE' ? 'crosshair' : 'default';
   }
 
@@ -236,6 +260,7 @@
       x: x,
       y: y,
       color: 0,
+      spin: 1,
       clamped: false,
       hidden: false,
     };
@@ -249,6 +274,15 @@
     state.selection.forEach(function (id) {
       var node = getNodeById(id);
       if (node) node.color = (node.color + 1) % state.colorCount;
+    });
+    render();
+  }
+
+  function toggleSpinSelected() {
+    saveUndo();
+    state.selection.forEach(function (id) {
+      var node = getNodeById(id);
+      if (node) node.spin *= -1;
     });
     render();
   }
@@ -281,31 +315,18 @@
 
   function toggleClampSelected() {
     saveUndo();
-    // Check if all selected are already clamped
-    var allClamped = true;
     state.selection.forEach(function (id) {
       var node = getNodeById(id);
-      if (node && !node.clamped) allClamped = false;
-    });
-    var newValue = !allClamped;
-    state.selection.forEach(function (id) {
-      var node = getNodeById(id);
-      if (node) node.clamped = newValue;
+      if (node) node.clamped = !node.clamped;
     });
     render();
   }
 
   function toggleHideSelected() {
     saveUndo();
-    var allHidden = true;
     state.selection.forEach(function (id) {
       var node = getNodeById(id);
-      if (node && !node.hidden) allHidden = false;
-    });
-    var newValue = !allHidden;
-    state.selection.forEach(function (id) {
-      var node = getNodeById(id);
-      if (node) node.hidden = newValue;
+      if (node) node.hidden = !node.hidden;
     });
     render();
   }
@@ -416,15 +437,11 @@
       return;
     }
 
-    // Toggle selection of nodes whose circle intersects the lasso polygon
+    // Lasso is additive only — select nodes touched, don't deselect any
     for (var i = 0; i < state.nodes.length; i++) {
       var node = state.nodes[i];
       if (circleIntersectsPolygon(node.x, node.y, NODE_RADIUS, pts)) {
-        if (state.selection.has(node.id)) {
-          state.selection.delete(node.id);
-        } else {
-          state.selection.add(node.id);
-        }
+        state.selection.add(node.id);
       }
     }
 
@@ -448,7 +465,19 @@
         render();
         break;
       case 'q':
-        cycleColorSelected();
+        if (state.display === 'STATE') {
+          toggleSpinSelected();
+        } else {
+          cycleColorSelected();
+        }
+        break;
+      case 'c':
+        state.display = 'COLORS';
+        render();
+        break;
+      case 's':
+        state.display = 'STATE';
+        render();
         break;
       case 'w':
         e.preventDefault();
