@@ -20,31 +20,48 @@
     selected: '#ff6600',
     lasso_fill: 'rgba(255, 102, 0, 0.15)',
     lasso_stroke: '#ff6600',
+    model_text: '#336699',
   };
 
   // --- State ---
   var state = {
     mode: 'NEW_NODE',
-    nodes: [],            // { id, x, y, color: 0..colorCount-1, spin: +1|-1, clamped, hidden }
+    nodes: [],       // { id, x, y, color, spin, bias, clamped, hidden }
     edges: new Set(),
+    weights: new Map(), // edgeKey -> number
     nextNodeId: 0,
     colorCount: 2,
-    display: 'COLORS',   // 'COLORS' | 'STATE'
+    display: 'COLORS',          // 'COLORS' | 'STATE' | 'MODEL'
+    coloringStatus: 'UNCHECKED', // 'UNCHECKED' | 'VALID' | 'INVALID'
     selection: new Set(),
     lasso: { active: false, points: [] },
+    drag: { active: false, lastPos: null },
   };
 
   var nodeMap = new Map();
   var undoSnapshot = null;
+  var entryMode = false;
+  var entryInputs = []; // { element, type, key/nodeId, origValue }
 
+  // --- Formatting ---
+  function formatSig(n) {
+    if (n === 0) return '0.0';
+    var s = n.toPrecision(2);
+    if (s.indexOf('e') !== -1) s = n.toFixed(1);
+    return s;
+  }
+
+  // --- Undo ---
   function saveUndo() {
     undoSnapshot = {
       nodes: state.nodes.map(function (n) {
-        return { id: n.id, x: n.x, y: n.y, color: n.color, spin: n.spin, clamped: n.clamped, hidden: n.hidden };
+        return { id: n.id, x: n.x, y: n.y, color: n.color, spin: n.spin, bias: n.bias, clamped: n.clamped, hidden: n.hidden };
       }),
       edges: new Set(state.edges),
+      weights: new Map(state.weights),
       nextNodeId: state.nextNodeId,
       colorCount: state.colorCount,
+      coloringStatus: state.coloringStatus,
       selection: new Set(state.selection),
     };
   }
@@ -53,8 +70,10 @@
     if (!undoSnapshot) return;
     state.nodes = undoSnapshot.nodes;
     state.edges = undoSnapshot.edges;
+    state.weights = undoSnapshot.weights;
     state.nextNodeId = undoSnapshot.nextNodeId;
     state.colorCount = undoSnapshot.colorCount;
+    state.coloringStatus = undoSnapshot.coloringStatus;
     state.selection = undoSnapshot.selection;
     nodeMap.clear();
     for (var i = 0; i < state.nodes.length; i++) {
@@ -87,11 +106,19 @@
   }
 
   function addEdge(a, b) {
-    if (a !== b) state.edges.add(edgeKey(a, b));
+    if (a !== b) {
+      var key = edgeKey(a, b);
+      if (!state.edges.has(key)) {
+        state.edges.add(key);
+        state.weights.set(key, 0.0);
+      }
+    }
   }
 
   function removeEdge(a, b) {
-    state.edges.delete(edgeKey(a, b));
+    var key = edgeKey(a, b);
+    state.edges.delete(key);
+    state.weights.delete(key);
   }
 
   function parseEdge(key) {
@@ -112,7 +139,6 @@
     return inside;
   }
 
-  // Minimum distance from point (px,py) to line segment (ax,ay)-(bx,by)
   function distToSegment(px, py, ax, ay, bx, by) {
     var dx = bx - ax, dy = by - ay;
     var lenSq = dx * dx + dy * dy;
@@ -128,8 +154,6 @@
     return Math.sqrt(fx * fx + fy * fy);
   }
 
-  // Does a circle (cx, cy, r) intersect or lie inside the polygon?
-  // True if: center is inside, OR any polygon edge passes within r of center.
   function circleIntersectsPolygon(cx, cy, r, polygon) {
     if (pointInPolygon(cx, cy, polygon)) return true;
     for (var i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -140,6 +164,146 @@
     return false;
   }
 
+  // --- Coloring validation ---
+  function checkColoring() {
+    var valid = true;
+    state.edges.forEach(function (key) {
+      var pair = parseEdge(key);
+      var a = getNodeById(pair[0]);
+      var b = getNodeById(pair[1]);
+      if (a && b && a.color === b.color) valid = false;
+    });
+    state.coloringStatus = valid ? 'VALID' : 'INVALID';
+  }
+
+  function updateColoringStatus() {
+    var el = document.getElementById('coloring-status');
+    if (state.coloringStatus === 'VALID') {
+      el.textContent = '\u2705';
+    } else if (state.coloringStatus === 'INVALID') {
+      el.textContent = '\u26D4';
+    } else {
+      el.textContent = '\u26A0\uFE0F';
+    }
+  }
+
+  // --- Model display: compute label positions ---
+  function edgeLabelPos(key) {
+    var pair = parseEdge(key);
+    var a = getNodeById(pair[0]);
+    var b = getNodeById(pair[1]);
+    if (!a || !b) return null;
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 10 };
+  }
+
+  function biasLabelPos(node) {
+    return { x: node.x + NODE_RADIUS + 4, y: node.y };
+  }
+
+  // --- Entry mode: overlay input fields on all weights and biases ---
+  function openEntryMode() {
+    if (entryMode) return;
+    entryMode = true;
+    saveUndo();
+
+    function makeInput(x, y, value, rec) {
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.value = formatSig(value);
+      input.style.position = 'fixed';
+      input.style.left = (x - 28) + 'px';
+      input.style.top = (y - 10) + 'px';
+      input.style.width = '56px';
+      input.style.height = '18px';
+      input.style.font = '10px monospace';
+      input.style.textAlign = 'center';
+      input.style.padding = '1px 2px';
+      input.style.border = '1px solid ' + COLORS.model_text;
+      input.style.borderRadius = '2px';
+      input.style.background = '#fff';
+      input.style.color = COLORS.model_text;
+      input.style.zIndex = '100';
+      input.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          var idx = entryInputs.indexOf(rec);
+          if (idx < entryInputs.length - 1) {
+            entryInputs[idx + 1].element.focus();
+            entryInputs[idx + 1].element.select();
+          } else {
+            closeEntryMode();
+          }
+        } else if (ev.key === 'Escape' || ev.key === 'q') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          closeEntryMode();
+        } else if (ev.key === 'Tab') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          var idx = entryInputs.indexOf(rec);
+          var next = ev.shiftKey ? idx - 1 : idx + 1;
+          if (next >= 0 && next < entryInputs.length) {
+            entryInputs[next].element.focus();
+            entryInputs[next].element.select();
+          }
+        } else {
+          ev.stopPropagation();
+        }
+      });
+      document.body.appendChild(input);
+      rec.element = input;
+      return input;
+    }
+
+    // Edge weight inputs
+    state.edges.forEach(function (key) {
+      var pos = edgeLabelPos(key);
+      if (!pos) return;
+      var w = state.weights.get(key) || 0;
+      var rec = { type: 'weight', key: key, origValue: w };
+      makeInput(pos.x, pos.y, w, rec);
+      entryInputs.push(rec);
+    });
+
+    // Node bias inputs
+    for (var i = 0; i < state.nodes.length; i++) {
+      var node = state.nodes[i];
+      var pos = biasLabelPos(node);
+      var rec = { type: 'bias', nodeId: node.id, origValue: node.bias };
+      makeInput(pos.x + 14, pos.y, node.bias, rec);
+      entryInputs.push(rec);
+    }
+
+    if (entryInputs.length > 0) {
+      var firstInput = entryInputs[0].element;
+      setTimeout(function () {
+        firstInput.focus();
+        firstInput.select();
+      }, 0);
+    }
+  }
+
+  function closeEntryMode() {
+    if (!entryMode) return;
+    // Read all values and apply
+    for (var i = 0; i < entryInputs.length; i++) {
+      var rec = entryInputs[i];
+      var val = parseFloat(rec.element.value);
+      if (isNaN(val)) val = rec.origValue;
+      if (rec.type === 'weight') {
+        state.weights.set(rec.key, val);
+      } else {
+        var node = getNodeById(rec.nodeId);
+        if (node) node.bias = val;
+      }
+      if (rec.element.parentNode) rec.element.parentNode.removeChild(rec.element);
+    }
+    entryInputs = [];
+    entryMode = false;
+    render();
+  }
+
   // --- Rendering ---
   function render() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -148,8 +312,10 @@
 
     drawEdges();
     drawNodes();
+    if (state.display === 'MODEL' && !entryMode) drawModelLabels();
     drawLasso();
     updateHUD();
+    updateColoringStatus();
   }
 
   function drawEdges() {
@@ -178,7 +344,7 @@
 
       // Fill
       if (state.display === 'STATE') {
-        ctx.fillStyle = node.spin === 1 ? '#ffffff' : '#1a1a1a';
+        ctx.fillStyle = '#FFD0B5';
       } else {
         ctx.fillStyle = PALETTE[node.color] || PALETTE[0];
       }
@@ -191,7 +357,33 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Clamp indicator: emoji inside the node
+      // State arrow (in State display)
+      if (state.display === 'STATE') {
+        var dir = node.spin === 1 ? -1 : 1; // -1 = up, 1 = down
+        var r = NODE_RADIUS * 0.45;
+        var headLen = NODE_RADIUS * 0.5;
+        var headW = NODE_RADIUS * 0.5;
+        var tipY = node.y + (r + headLen) * dir;
+        var tailY = node.y - r * dir;
+        var shaftW = 2;
+
+        ctx.fillStyle = '#1a1a1a';
+        ctx.lineJoin = 'miter';
+        ctx.beginPath();
+        // Shaft as a filled rectangle
+        ctx.moveTo(node.x - shaftW, tailY);
+        ctx.lineTo(node.x + shaftW, tailY);
+        ctx.lineTo(node.x + shaftW, node.y + r * dir);
+        // Arrowhead
+        ctx.lineTo(node.x + headW, node.y + r * dir);
+        ctx.lineTo(node.x, tipY);
+        ctx.lineTo(node.x - headW, node.y + r * dir);
+        ctx.lineTo(node.x - shaftW, node.y + r * dir);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Clamp indicator
       if (node.clamped) {
         ctx.font = (NODE_RADIUS) + 'px serif';
         ctx.textAlign = 'center';
@@ -205,6 +397,66 @@
       ctx.textBaseline = 'middle';
       ctx.fillStyle = COLORS.border;
       ctx.fillText(String(i + 1), node.x - NODE_RADIUS - 4, node.y);
+    }
+  }
+
+  function separateLabels(labels, minDist) {
+    // Push overlapping labels apart iteratively
+    for (var iter = 0; iter < 10; iter++) {
+      var moved = false;
+      for (var i = 0; i < labels.length; i++) {
+        for (var j = i + 1; j < labels.length; j++) {
+          var dx = labels[j].x - labels[i].x;
+          var dy = labels[j].y - labels[i].y;
+          var d = Math.sqrt(dx * dx + dy * dy);
+          if (d < minDist && d > 0) {
+            var push = (minDist - d) / 2;
+            var nx = dx / d, ny = dy / d;
+            labels[i].x -= nx * push;
+            labels[i].y -= ny * push;
+            labels[j].x += nx * push;
+            labels[j].y += ny * push;
+            moved = true;
+          } else if (d === 0) {
+            // Coincident — push apart arbitrarily
+            labels[j].y += minDist;
+            moved = true;
+          }
+        }
+      }
+      if (!moved) break;
+    }
+  }
+
+  function drawModelLabels() {
+    // Collect edge weight labels
+    var edgeLabels = [];
+    state.edges.forEach(function (key) {
+      var pos = edgeLabelPos(key);
+      if (!pos) return;
+      var w = state.weights.get(key);
+      if (w === undefined) w = 0;
+      edgeLabels.push({ x: pos.x, y: pos.y, text: formatSig(w) });
+    });
+
+    separateLabels(edgeLabels, 16);
+
+    ctx.font = '10px monospace';
+    ctx.fillStyle = COLORS.model_text;
+
+    for (var i = 0; i < edgeLabels.length; i++) {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(edgeLabels[i].text, edgeLabels[i].x, edgeLabels[i].y);
+    }
+
+    // Node biases to the right (these don't overlap with each other typically)
+    for (var i = 0; i < state.nodes.length; i++) {
+      var node = state.nodes[i];
+      var pos = biasLabelPos(node);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(formatSig(node.bias), pos.x, pos.y);
     }
   }
 
@@ -245,9 +497,10 @@
         dspans[i].classList.remove('mode-active');
       }
     }
-    // Update q label based on display mode
     var qLabel = document.getElementById('q-label');
-    if (qLabel) qLabel.textContent = state.display === 'STATE' ? 'q — State' : 'q — Color';
+    if (state.display === 'STATE') qLabel.textContent = 'q \u2014 State';
+    else if (state.display === 'COLORS') qLabel.textContent = 'q \u2014 Color';
+    else if (state.display === 'MODEL') qLabel.textContent = 'q \u2014 Entry';
 
     canvas.style.cursor = state.mode === 'NEW_NODE' ? 'crosshair' : 'default';
   }
@@ -261,6 +514,7 @@
       y: y,
       color: 0,
       spin: 1,
+      bias: 0.0,
       clamped: false,
       hidden: false,
     };
@@ -275,6 +529,7 @@
       var node = getNodeById(id);
       if (node) node.color = (node.color + 1) % state.colorCount;
     });
+    state.coloringStatus = 'UNCHECKED';
     render();
   }
 
@@ -290,7 +545,6 @@
   function toggleConnectSelected() {
     saveUndo();
     var ids = Array.from(state.selection);
-    // Check if all pairs are already connected
     var allConnected = true;
     for (var i = 0; i < ids.length && allConnected; i++) {
       for (var j = i + 1; j < ids.length && allConnected; j++) {
@@ -310,6 +564,7 @@
         }
       }
     }
+    state.coloringStatus = 'UNCHECKED';
     render();
   }
 
@@ -333,18 +588,18 @@
 
   function deleteSelected() {
     saveUndo();
-    // Remove all edges that touch any selected node
     var toDelete = new Set(state.selection);
     state.edges.forEach(function (key) {
       var pair = parseEdge(key);
       if (toDelete.has(pair[0]) || toDelete.has(pair[1])) {
         state.edges.delete(key);
+        state.weights.delete(key);
       }
     });
-    // Remove the nodes
     state.nodes = state.nodes.filter(function (n) { return !toDelete.has(n.id); });
     toDelete.forEach(function (id) { nodeMap.delete(id); });
     state.selection.clear();
+    if (state.coloringStatus === 'INVALID') state.coloringStatus = 'UNCHECKED';
     render();
   }
 
@@ -360,7 +615,6 @@
   }
 
   function nodeAtPos(x, y) {
-    // Search back-to-front so topmost (last drawn) node wins
     for (var i = state.nodes.length - 1; i >= 0; i--) {
       var n = state.nodes[i];
       var dx = x - n.x, dy = y - n.y;
@@ -387,19 +641,24 @@
     var pos = getMousePos(e);
 
     if (state.mode === 'NEW_NODE') {
-      createNode(pos.x, pos.y);
+      if (!nodeAtPos(pos.x, pos.y)) createNode(pos.x, pos.y);
       return;
     }
 
     if (state.mode === 'CLICK_SELECT') {
-      var hit = nodeAtPos(pos.x, pos.y);
-      if (hit) {
-        if (state.selection.has(hit.id)) {
-          state.selection.delete(hit.id);
-        } else {
-          state.selection.add(hit.id);
+      var hitNode = nodeAtPos(pos.x, pos.y);
+      if (hitNode) {
+        if (!state.selection.has(hitNode.id)) {
+          state.selection.add(hitNode.id);
+          render();
         }
-        render();
+        state.drag.active = true;
+        state.drag.lastPos = pos;
+        state.drag.didMove = false;
+        state.drag.hitId = hitNode.id;
+        saveUndo();
+        window.addEventListener('mousemove', onDragMove);
+        window.addEventListener('mouseup', onDragUp);
       }
       return;
     }
@@ -431,13 +690,11 @@
     state.lasso.active = false;
     state.lasso.points = [];
 
-    // Tiny lasso (accidental click) = no-op
     if (bbox.width < 5 && bbox.height < 5) {
       render();
       return;
     }
 
-    // Lasso is additive only — select nodes touched, don't deselect any
     for (var i = 0; i < state.nodes.length; i++) {
       var node = state.nodes[i];
       if (circleIntersectsPolygon(node.x, node.y, NODE_RADIUS, pts)) {
@@ -446,6 +703,35 @@
     }
 
     render();
+  }
+
+  function onDragMove(e) {
+    var pos = getMousePos(e);
+    var dx = pos.x - state.drag.lastPos.x;
+    var dy = pos.y - state.drag.lastPos.y;
+    if (dx !== 0 || dy !== 0) state.drag.didMove = true;
+    state.selection.forEach(function (id) {
+      var node = getNodeById(id);
+      if (node) {
+        node.x += dx;
+        node.y += dy;
+      }
+    });
+    state.drag.lastPos = pos;
+    render();
+  }
+
+  function onDragUp(e) {
+    window.removeEventListener('mousemove', onDragMove);
+    window.removeEventListener('mouseup', onDragUp);
+    state.drag.active = false;
+    if (!state.drag.didMove) {
+      undoSnapshot = null;
+      if (state.selection.has(state.drag.hitId)) {
+        state.selection.delete(state.drag.hitId);
+      }
+      render();
+    }
   }
 
   function onKeyDown(e) {
@@ -465,18 +751,26 @@
         render();
         break;
       case 'q':
-        if (state.display === 'STATE') {
+        if (state.display === 'MODEL') {
+          if (entryMode) closeEntryMode(); else openEntryMode();
+        } else if (state.display === 'STATE') {
           toggleSpinSelected();
-        } else {
+        } else if (state.display === 'COLORS') {
           cycleColorSelected();
         }
         break;
       case 'c':
+        if (entryMode) closeEntryMode();
         state.display = 'COLORS';
         render();
         break;
       case 's':
+        if (entryMode) closeEntryMode();
         state.display = 'STATE';
+        render();
+        break;
+      case 'm':
+        state.display = 'MODEL';
         render();
         break;
       case 'w':
@@ -513,19 +807,80 @@
   colorCountSelect.addEventListener('change', function () {
     saveUndo();
     state.colorCount = Number(colorCountSelect.value);
-    // Clamp any out-of-range colors
     for (var i = 0; i < state.nodes.length; i++) {
       if (state.nodes[i].color >= state.colorCount) {
         state.nodes[i].color = state.nodes[i].color % state.colorCount;
       }
     }
+    state.coloringStatus = 'UNCHECKED';
     state.selection.clear();
     colorCountSelect.blur();
     render();
   });
 
+  // --- Coloring check button ---
+  document.getElementById('coloring-check').addEventListener('click', function () {
+    checkColoring();
+    render();
+  });
+
+  // --- Initial graph ---
+  function initGraph() {
+    var cx = canvas.width / 2;
+    var cy = canvas.height / 2;
+    var spacing = 140;
+
+    // 3 white nodes in top row
+    var whites = [];
+    for (var i = 0; i < 3; i++) {
+      var node = {
+        id: state.nextNodeId++,
+        x: cx + (i - 1) * spacing,
+        y: cy - 90,
+        color: 0,
+        spin: 1,
+        bias: 0.0,
+        clamped: false,
+        hidden: false,
+      };
+      state.nodes.push(node);
+      nodeMap.set(node.id, node);
+      whites.push(node);
+    }
+
+    // 2 black nodes in bottom row
+    var blacks = [];
+    for (var i = 0; i < 2; i++) {
+      var node = {
+        id: state.nextNodeId++,
+        x: cx + (i - 0.5) * spacing,
+        y: cy + 90,
+        color: 1,
+        spin: 1,
+        bias: 0.0,
+        clamped: false,
+        hidden: true,
+      };
+      state.nodes.push(node);
+      nodeMap.set(node.id, node);
+      blacks.push(node);
+    }
+
+    // Fully connect white to black
+    for (var i = 0; i < whites.length; i++) {
+      for (var j = 0; j < blacks.length; j++) {
+        var key = edgeKey(whites[i].id, blacks[j].id);
+        state.edges.add(key);
+        state.weights.set(key, Math.random() * 2 - 1);
+      }
+    }
+  }
+
   // --- Init ---
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  initGraph();
   canvas.addEventListener('mousedown', onMouseDown);
   document.addEventListener('keydown', onKeyDown);
-  resizeCanvas();
+  render();
 })();

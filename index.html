@@ -38,9 +38,19 @@
       font: 12px/1.6 monospace;
       padding: 8px 12px;
       border-radius: 4px;
+    }
+
+    #controls-row1 {
       display: flex;
       align-items: center;
       gap: 8px;
+    }
+
+    #controls-row2 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
     }
 
     #color-count {
@@ -51,21 +61,41 @@
       background: #333;
       color: #fff;
     }
+
+    #coloring-check {
+      font: 11px monospace;
+      padding: 2px 6px;
+      border-radius: 3px;
+      border: 1px solid #888;
+      background: #444;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    #coloring-check:hover {
+      background: #555;
+    }
   </style>
 </head>
 <body>
   <canvas id="canvas"></canvas>
   <div id="controls">
-    <label for="color-count">Colors:</label>
-    <select id="color-count">
-      <option value="2" selected>2</option>
-      <option value="3">3</option>
-      <option value="4">4</option>
-      <option value="5">5</option>
-      <option value="6">6</option>
-      <option value="7">7</option>
-      <option value="8">8</option>
-    </select>
+    <div id="controls-row1">
+      <label for="color-count">Colors:</label>
+      <select id="color-count">
+        <option value="2" selected>2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
+        <option value="7">7</option>
+        <option value="8">8</option>
+      </select>
+    </div>
+    <div id="controls-row2">
+      <span id="coloring-status">&#x26A0;&#xFE0F;</span>
+      <button id="coloring-check">Coloring?</button>
+    </div>
   </div>
   <div id="legend">
     <strong>Modes</strong><br>
@@ -76,6 +106,7 @@
     <strong>Display</strong><br>
     <span data-display="COLORS">c — Colors</span><br>
     <span data-display="STATE">s — State</span><br>
+    <span data-display="MODEL">m — Model</span><br>
     <br>
     <strong>Actions</strong><br>
     <span id="q-label">q — Color</span><br>
