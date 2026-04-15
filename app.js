@@ -3,6 +3,16 @@
 
   // --- Constants ---
   var NODE_RADIUS = 16;
+  var PALETTE = [
+    '#ffffff', // 0: white
+    '#1a1a1a', // 1: black
+    '#e74c3c', // 2: red
+    '#3498db', // 3: blue
+    '#2ecc71', // 4: green
+    '#f1c40f', // 5: yellow
+    '#9b59b6', // 6: purple
+    '#e67e22', // 7: orange
+  ];
   var COLORS = {
     background: '#f5f5f0',
     edge: '#999999',
@@ -10,16 +20,15 @@
     selected: '#ff6600',
     lasso_fill: 'rgba(255, 102, 0, 0.15)',
     lasso_stroke: '#ff6600',
-    white_fill: '#ffffff',
-    black_fill: '#1a1a1a',
   };
 
   // --- State ---
   var state = {
     mode: 'NEW_NODE',
-    nodes: [],
+    nodes: [],            // { id, x, y, color: 0..colorCount-1, clamped: bool }
     edges: new Set(),
     nextNodeId: 0,
+    colorCount: 2,
     selection: new Set(),
     lasso: { active: false, points: [] },
   };
@@ -34,6 +43,7 @@
       }),
       edges: new Set(state.edges),
       nextNodeId: state.nextNodeId,
+      colorCount: state.colorCount,
       selection: new Set(state.selection),
     };
   }
@@ -43,12 +53,14 @@
     state.nodes = undoSnapshot.nodes;
     state.edges = undoSnapshot.edges;
     state.nextNodeId = undoSnapshot.nextNodeId;
+    state.colorCount = undoSnapshot.colorCount;
     state.selection = undoSnapshot.selection;
     nodeMap.clear();
     for (var i = 0; i < state.nodes.length; i++) {
       nodeMap.set(state.nodes[i].id, state.nodes[i]);
     }
     undoSnapshot = null;
+    document.getElementById('color-count').value = state.colorCount;
     render();
   }
 
@@ -164,7 +176,7 @@
       ctx.arc(node.x, node.y, NODE_RADIUS, 0, Math.PI * 2);
 
       // Fill
-      ctx.fillStyle = node.color === 'white' ? COLORS.white_fill : COLORS.black_fill;
+      ctx.fillStyle = PALETTE[node.color] || PALETTE[0];
       ctx.fill();
 
       // Stroke
@@ -204,9 +216,14 @@
   }
 
   function updateHUD() {
-    var label = state.mode === 'NEW_NODE' ? 'New Node (1)' : 'Select (2)';
-    document.getElementById('mode-indicator').textContent = 'Mode: ' + label;
-
+    var spans = document.querySelectorAll('[data-mode]');
+    for (var i = 0; i < spans.length; i++) {
+      if (spans[i].getAttribute('data-mode') === state.mode) {
+        spans[i].classList.add('mode-active');
+      } else {
+        spans[i].classList.remove('mode-active');
+      }
+    }
     canvas.style.cursor = state.mode === 'NEW_NODE' ? 'crosshair' : 'default';
   }
 
@@ -217,7 +234,7 @@
       id: state.nextNodeId++,
       x: x,
       y: y,
-      color: 'white',
+      color: 0,
       clamped: false,
     };
     state.nodes.push(node);
@@ -225,51 +242,53 @@
     render();
   }
 
-  function toggleColorSelected() {
+  function cycleColorSelected() {
     saveUndo();
     state.selection.forEach(function (id) {
       var node = getNodeById(id);
-      if (node) node.color = node.color === 'white' ? 'black' : 'white';
+      if (node) node.color = (node.color + 1) % state.colorCount;
     });
     render();
   }
 
-  function fullyConnectSelected() {
+  function toggleConnectSelected() {
     saveUndo();
     var ids = Array.from(state.selection);
-    for (var i = 0; i < ids.length; i++) {
-      for (var j = i + 1; j < ids.length; j++) {
-        addEdge(ids[i], ids[j]);
+    // Check if all pairs are already connected
+    var allConnected = true;
+    for (var i = 0; i < ids.length && allConnected; i++) {
+      for (var j = i + 1; j < ids.length && allConnected; j++) {
+        if (!state.edges.has(edgeKey(ids[i], ids[j]))) allConnected = false;
+      }
+    }
+    if (allConnected) {
+      for (var i = 0; i < ids.length; i++) {
+        for (var j = i + 1; j < ids.length; j++) {
+          removeEdge(ids[i], ids[j]);
+        }
+      }
+    } else {
+      for (var i = 0; i < ids.length; i++) {
+        for (var j = i + 1; j < ids.length; j++) {
+          addEdge(ids[i], ids[j]);
+        }
       }
     }
     render();
   }
 
-  function fullyDisconnectSelected() {
+  function toggleClampSelected() {
     saveUndo();
-    var ids = Array.from(state.selection);
-    for (var i = 0; i < ids.length; i++) {
-      for (var j = i + 1; j < ids.length; j++) {
-        removeEdge(ids[i], ids[j]);
-      }
-    }
-    render();
-  }
-
-  function clampSelected() {
-    saveUndo();
+    // Check if all selected are already clamped
+    var allClamped = true;
     state.selection.forEach(function (id) {
       var node = getNodeById(id);
-      if (node) node.clamped = true;
+      if (node && !node.clamped) allClamped = false;
     });
-    render();
-  }
-
-  function unclampSelected() {
-    saveUndo();
+    var newValue = !allClamped;
     state.selection.forEach(function (id) {
       var node = getNodeById(id);
-      if (node) node.clamped = false;
+      if (node) node.clamped = newValue;
     });
     render();
   }
@@ -302,6 +321,16 @@
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
+  function nodeAtPos(x, y) {
+    // Search back-to-front so topmost (last drawn) node wins
+    for (var i = state.nodes.length - 1; i >= 0; i--) {
+      var n = state.nodes[i];
+      var dx = x - n.x, dy = y - n.y;
+      if (dx * dx + dy * dy <= NODE_RADIUS * NODE_RADIUS) return n;
+    }
+    return null;
+  }
+
   // --- Lasso helpers ---
   function lassoBBox(points) {
     var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -316,6 +345,7 @@
 
   // --- Event handlers ---
   function onMouseDown(e) {
+    if (e.target !== canvas) return;
     var pos = getMousePos(e);
 
     if (state.mode === 'NEW_NODE') {
@@ -323,7 +353,20 @@
       return;
     }
 
-    if (state.mode === 'SELECT') {
+    if (state.mode === 'CLICK_SELECT') {
+      var hit = nodeAtPos(pos.x, pos.y);
+      if (hit) {
+        if (state.selection.has(hit.id)) {
+          state.selection.delete(hit.id);
+        } else {
+          state.selection.add(hit.id);
+        }
+        render();
+      }
+      return;
+    }
+
+    if (state.mode === 'LASSO_SELECT') {
       state.lasso.active = true;
       state.lasso.points = [pos];
       window.addEventListener('mousemove', onMouseMove);
@@ -350,18 +393,21 @@
     state.lasso.active = false;
     state.lasso.points = [];
 
-    // Tiny lasso = click on empty space = deselect
+    // Tiny lasso (accidental click) = no-op
     if (bbox.width < 5 && bbox.height < 5) {
-      clearSelection();
+      render();
       return;
     }
 
-    // Select any node whose circle intersects the lasso polygon
-    state.selection.clear();
+    // Toggle selection of nodes whose circle intersects the lasso polygon
     for (var i = 0; i < state.nodes.length; i++) {
       var node = state.nodes[i];
       if (circleIntersectsPolygon(node.x, node.y, NODE_RADIUS, pts)) {
-        state.selection.add(node.id);
+        if (state.selection.has(node.id)) {
+          state.selection.delete(node.id);
+        } else {
+          state.selection.add(node.id);
+        }
       }
     }
 
@@ -369,7 +415,7 @@
   }
 
   function onKeyDown(e) {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
 
     switch (e.key) {
       case '1':
@@ -377,26 +423,23 @@
         clearSelection();
         break;
       case '2':
-        state.mode = 'SELECT';
+        state.mode = 'LASSO_SELECT';
+        render();
+        break;
+      case '3':
+        state.mode = 'CLICK_SELECT';
         render();
         break;
       case 'q':
-        toggleColorSelected();
+        cycleColorSelected();
         break;
       case 'w':
         e.preventDefault();
-        fullyConnectSelected();
-        break;
-      case 'e':
-        fullyDisconnectSelected();
+        toggleConnectSelected();
         break;
       case 'r':
         e.preventDefault();
-        clampSelected();
-        break;
-      case 't':
-        e.preventDefault();
-        unclampSelected();
+        toggleClampSelected();
         break;
       case 'd':
       case 'Backspace':
@@ -415,6 +458,22 @@
         break;
     }
   }
+
+  // --- Color count dropdown ---
+  var colorCountSelect = document.getElementById('color-count');
+  colorCountSelect.addEventListener('change', function () {
+    saveUndo();
+    state.colorCount = Number(colorCountSelect.value);
+    // Clamp any out-of-range colors
+    for (var i = 0; i < state.nodes.length; i++) {
+      if (state.nodes[i].color >= state.colorCount) {
+        state.nodes[i].color = state.nodes[i].color % state.colorCount;
+      }
+    }
+    state.selection.clear();
+    colorCountSelect.blur();
+    render();
+  });
 
   // --- Init ---
   canvas.addEventListener('mousedown', onMouseDown);
