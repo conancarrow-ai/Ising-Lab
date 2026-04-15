@@ -436,12 +436,12 @@
         ctx.fill();
       }
 
-      // Clamp indicator (small, down-left)
+      // Clamp indicator to the left, surrounding the node number
       if (node.clamped) {
-        ctx.font = Math.round(NODE_RADIUS * 0.7) + 'px serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('\u{1F5DC}', node.x - 4, node.y + 5);
+        ctx.font = Math.round(NODE_RADIUS * 0.6) + 'px serif';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillText('\u{1F5DC}', node.x - NODE_RADIUS - 1, node.y + 8);
       }
 
       // Node number to the left
