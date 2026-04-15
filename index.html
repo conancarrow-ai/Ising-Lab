@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ising Lab</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; user-select: none; background: #f5f5f0; }
+    canvas { display: block; }
+
+    #mode-indicator {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      font: 14px/1.4 monospace;
+      padding: 6px 12px;
+      border-radius: 4px;
+      pointer-events: none;
+    }
+
+    #legend {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      font: 12px/1.6 monospace;
+      padding: 10px 14px;
+      border-radius: 4px;
+      pointer-events: none;
+    }
+
+    #legend strong {
+      color: #ff9944;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="mode-indicator"></div>
+  <div id="legend">
+    <strong>Modes</strong><br>
+    1 — New Node<br>
+    2 — Select (lasso)<br>
+    <br>
+    <strong>Actions (on selection)</strong><br>
+    q — Toggle color<br>
+    w — Connect all<br>
+    e — Disconnect all<br>
+    r — Clamp 🗜<br>
+    t — Unclamp<br>
+    d — Delete<br>
+    Esc — Deselect all<br>
+    <br>
+    Ctrl+Z — Undo
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
