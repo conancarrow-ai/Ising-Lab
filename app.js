@@ -36,6 +36,7 @@
     selection: new Set(),
     lasso: { active: false, points: [] },
     drag: { active: false, lastPos: null },
+    updateColorIndex: 0, // which color to update next in Glauber dynamics
   };
 
   var nodeMap = new Map();
@@ -502,6 +503,9 @@
     else if (state.display === 'COLORS') qLabel.textContent = 'q \u2014 Color';
     else if (state.display === 'MODEL') qLabel.textContent = 'q \u2014 Entry';
 
+    var updateLabel = document.getElementById('update-label');
+    updateLabel.style.display = state.display === 'STATE' ? '' : 'none';
+
     canvas.style.cursor = state.mode === 'NEW_NODE' ? 'crosshair' : 'default';
   }
 
@@ -605,6 +609,40 @@
 
   function clearSelection() {
     state.selection.clear();
+    render();
+  }
+
+  // --- Glauber dynamics ---
+  function glauberUpdate() {
+    saveUndo();
+    var color = state.updateColorIndex;
+
+    // Build adjacency: for each node, list of { neighborId, edgeKey }
+    for (var i = 0; i < state.nodes.length; i++) {
+      var node = state.nodes[i];
+      if (node.color !== color || node.clamped) continue;
+
+      // Compute local field h_i = b_i + Σ_j J_ij * s_j
+      var h = node.bias;
+      state.edges.forEach(function (key) {
+        var pair = parseEdge(key);
+        var neighborId = null;
+        if (pair[0] === node.id) neighborId = pair[1];
+        else if (pair[1] === node.id) neighborId = pair[0];
+        if (neighborId === null) return;
+        var neighbor = getNodeById(neighborId);
+        if (!neighbor) return;
+        var w = state.weights.get(key) || 0;
+        h += w * neighbor.spin;
+      });
+
+      // P(s_i = +1) = sigmoid(2 * h)
+      var p = 1 / (1 + Math.exp(-2 * h));
+      node.spin = Math.random() < p ? 1 : -1;
+    }
+
+    // Advance to next color
+    state.updateColorIndex = (color + 1) % state.colorCount;
     render();
   }
 
@@ -794,6 +832,12 @@
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
           restoreUndo();
+        }
+        break;
+      case 'ArrowRight':
+        if (state.display === 'STATE') {
+          e.preventDefault();
+          glauberUpdate();
         }
         break;
       case 'Escape':
