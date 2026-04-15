@@ -32,7 +32,7 @@
     #controls {
       position: fixed;
       top: 16px;
-      right: 16px;
+      left: 16px;
       background: rgba(0, 0, 0, 0.75);
       color: #fff;
       font: 12px/1.6 monospace;
@@ -75,6 +75,24 @@
     #coloring-check:hover {
       background: #555;
     }
+
+    #controls-row3 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    #history-size {
+      font: 12px monospace;
+      width: 40px;
+      padding: 2px 4px;
+      border-radius: 3px;
+      border: 1px solid #888;
+      background: #333;
+      color: #fff;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -95,6 +113,10 @@
     <div id="controls-row2">
       <span id="coloring-status">&#x26A0;&#xFE0F;</span>
       <button id="coloring-check">Coloring?</button>
+    </div>
+    <div id="controls-row3">
+      <label for="history-size">History:</label>
+      <input id="history-size" type="text" value="30">
     </div>
   </div>
   <div id="legend">

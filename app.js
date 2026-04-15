@@ -39,8 +39,8 @@
     updateColorIndex: 0, // which color to update next in Glauber dynamics
   };
 
-  // Running statistics: ring buffer of last 30 spin snapshots
-  var STATS_WINDOW = 30;
+  // Running statistics: ring buffer of spin snapshots
+  var statsWindow = 30;
   var statsHistory = []; // array of { nodeSpins: Map<id, spin>, edgeProducts: Map<edgeKey, product> }
 
   function recordSnapshot() {
@@ -56,7 +56,7 @@
       if (a && b) edgeProducts.set(key, a.spin * b.spin);
     });
     statsHistory.push({ nodeSpins: nodeSpins, edgeProducts: edgeProducts });
-    if (statsHistory.length > STATS_WINDOW) statsHistory.shift();
+    while (statsHistory.length > statsWindow) statsHistory.shift();
   }
 
   function nodeAvg(nodeId) {
@@ -297,15 +297,23 @@
       return input;
     }
 
-    // Edge weight inputs
+    // Collect edge label positions and separate overlapping ones
+    var edgeEntries = [];
     state.edges.forEach(function (key) {
       var pos = edgeLabelPos(key);
       if (!pos) return;
-      var w = state.weights.get(key) || 0;
-      var rec = { type: 'weight', key: key, origValue: w };
-      makeInput(pos.x, pos.y, w, rec);
-      entryInputs.push(rec);
+      edgeEntries.push({ x: pos.x, y: pos.y, key: key });
     });
+    separateLabels(edgeEntries, 22);
+
+    // Edge weight inputs at separated positions
+    for (var ei = 0; ei < edgeEntries.length; ei++) {
+      var entry = edgeEntries[ei];
+      var w = state.weights.get(entry.key) || 0;
+      var rec = { type: 'weight', key: entry.key, origValue: w };
+      makeInput(entry.x, entry.y, w, rec);
+      entryInputs.push(rec);
+    }
 
     // Node bias inputs
     for (var i = 0; i < state.nodes.length; i++) {
@@ -354,7 +362,10 @@
     drawEdges();
     drawNodes();
     if (state.display === 'MODEL' && !entryMode) drawModelLabels();
-    if (state.display === 'STATE' && statsHistory.length > 0) drawStateStats();
+    if (state.display === 'STATE' && statsHistory.length > 0) {
+      drawStateStats();
+      drawHistoryGrid();
+    }
     drawLasso();
     updateHUD();
     updateColoringStatus();
@@ -538,6 +549,51 @@
     }
   }
 
+  function drawHistoryGrid() {
+    if (statsHistory.length === 0 || state.nodes.length === 0) return;
+    var cellSize = 15;
+    var padding = 16;
+    var nNodes = state.nodes.length;
+    var nRows = statsHistory.length;
+    var gridW = nNodes * cellSize;
+    var gridH = nRows * cellSize;
+    var x0 = canvas.width - padding - gridW;
+    var y0 = padding;
+
+    // Border
+    ctx.strokeStyle = COLORS.border;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    ctx.strokeRect(x0 - 1, y0 - 1, gridW + 2, gridH + 2);
+
+    // Draw cells
+    for (var row = 0; row < nRows; row++) {
+      var snap = statsHistory[row];
+      for (var col = 0; col < nNodes; col++) {
+        var nodeId = state.nodes[col].id;
+        var spin = snap.nodeSpins.get(nodeId);
+        ctx.fillStyle = (spin === 1) ? '#ffffff' : '#1a1a1a';
+        ctx.fillRect(x0 + col * cellSize, y0 + row * cellSize, cellSize, cellSize);
+      }
+    }
+
+    // Grid lines
+    ctx.strokeStyle = '#cccccc';
+    ctx.lineWidth = 0.5;
+    for (var col = 0; col <= nNodes; col++) {
+      ctx.beginPath();
+      ctx.moveTo(x0 + col * cellSize, y0);
+      ctx.lineTo(x0 + col * cellSize, y0 + gridH);
+      ctx.stroke();
+    }
+    for (var row = 0; row <= nRows; row++) {
+      ctx.beginPath();
+      ctx.moveTo(x0, y0 + row * cellSize);
+      ctx.lineTo(x0 + gridW, y0 + row * cellSize);
+      ctx.stroke();
+    }
+  }
+
   function drawLasso() {
     if (!state.lasso.active || state.lasso.points.length < 2) return;
 
@@ -601,6 +657,7 @@
     };
     state.nodes.push(node);
     nodeMap.set(node.id, node);
+    statsHistory = [];
     render();
   }
 
@@ -681,6 +738,7 @@
     toDelete.forEach(function (id) { nodeMap.delete(id); });
     state.selection.clear();
     if (state.coloringStatus === 'INVALID') state.coloringStatus = 'UNCHECKED';
+    statsHistory = [];
     render();
   }
 
@@ -780,7 +838,8 @@
     if (state.mode === 'CLICK_SELECT') {
       var hitNode = nodeAtPos(pos.x, pos.y);
       if (hitNode) {
-        if (!state.selection.has(hitNode.id)) {
+        var wasSelected = state.selection.has(hitNode.id);
+        if (!wasSelected) {
           state.selection.add(hitNode.id);
           render();
         }
@@ -788,6 +847,7 @@
         state.drag.lastPos = pos;
         state.drag.didMove = false;
         state.drag.hitId = hitNode.id;
+        state.drag.wasSelected = wasSelected;
         saveUndo();
         window.addEventListener('mousemove', onDragMove);
         window.addEventListener('mouseup', onDragUp);
@@ -859,7 +919,8 @@
     state.drag.active = false;
     if (!state.drag.didMove) {
       undoSnapshot = null;
-      if (state.selection.has(state.drag.hitId)) {
+      // Only deselect if the node was already selected before this click
+      if (state.drag.wasSelected && state.selection.has(state.drag.hitId)) {
         state.selection.delete(state.drag.hitId);
       }
       render();
@@ -969,6 +1030,18 @@
   // --- Coloring check button ---
   document.getElementById('coloring-check').addEventListener('click', function () {
     checkColoring();
+    render();
+  });
+
+  // --- History size input ---
+  var historySizeInput = document.getElementById('history-size');
+  historySizeInput.addEventListener('change', function () {
+    var val = parseInt(historySizeInput.value);
+    if (isNaN(val) || val < 1) val = 1;
+    statsWindow = val;
+    historySizeInput.value = val;
+    while (statsHistory.length > statsWindow) statsHistory.shift();
+    historySizeInput.blur();
     render();
   });
 
