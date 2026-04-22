@@ -3,6 +3,7 @@
 
   // --- Constants ---
   var NODE_RADIUS = 16;
+  var LATTICE_SPACING = 120;
   var PALETTE = [
     '#ffffff', // 0: white
     '#1a1a1a', // 1: black
@@ -83,6 +84,8 @@
   var undoSnapshot = null;
   var entryMode = false;
   var entryInputs = []; // { element, type, key/nodeId, origValue }
+  var showLattice = false;
+  var latticeOrigin = { x: 0, y: 0 }; // fixed in absolute canvas coords
 
   // --- Formatting ---
   function formatSig(n) {
@@ -359,6 +362,7 @@
     ctx.fillStyle = COLORS.background;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    if (showLattice) drawLatticePoints();
     drawEdges();
     drawNodes();
     if (state.display === 'MODEL' && !entryMode) drawModelLabels();
@@ -369,6 +373,32 @@
     drawLasso();
     updateHUD();
     updateColoringStatus();
+  }
+
+  function drawLatticePoints() {
+    var h = LATTICE_SPACING;
+    var sqrt3_2 = Math.sqrt(3) / 2;
+    var ox = latticeOrigin.x;
+    var oy = latticeOrigin.y;
+
+    ctx.fillStyle = '#d4d4d4';
+    var margin = 20;
+    var n2min = Math.floor((-margin - oy) / (h * sqrt3_2)) - 1;
+    var n2max = Math.ceil((canvas.height + margin - oy) / (h * sqrt3_2)) + 1;
+    for (var n2 = n2min; n2 <= n2max; n2++) {
+      var py = oy + n2 * h * sqrt3_2;
+      var rowXOff = n2 * h / 2;
+      var n1min = Math.floor((-margin - ox - rowXOff) / h) - 1;
+      var n1max = Math.ceil((canvas.width + margin - ox - rowXOff) / h) + 1;
+      for (var n1 = n1min; n1 <= n1max; n1++) {
+        var px = ox + n1 * h + rowXOff;
+        if (px < -margin || px > canvas.width + margin) continue;
+        if (py < -margin || py > canvas.height + margin) continue;
+        ctx.beginPath();
+        ctx.arc(px, py, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
 
   function drawEdges() {
@@ -683,24 +713,26 @@
   function toggleConnectSelected() {
     saveUndo();
     var ids = Array.from(state.selection);
-    var allConnected = true;
-    for (var i = 0; i < ids.length && allConnected; i++) {
-      for (var j = i + 1; j < ids.length && allConnected; j++) {
-        if (!state.edges.has(edgeKey(ids[i], ids[j]))) allConnected = false;
+    // Collect unlike-color pairs
+    var pairs = [];
+    for (var i = 0; i < ids.length; i++) {
+      var a = getNodeById(ids[i]);
+      if (!a) continue;
+      for (var j = i + 1; j < ids.length; j++) {
+        var b = getNodeById(ids[j]);
+        if (!b) continue;
+        if (a.color !== b.color) pairs.push([ids[i], ids[j]]);
       }
     }
+    // If every unlike-color pair is already connected, disconnect them; else connect them
+    var allConnected = pairs.length > 0;
+    for (var k = 0; k < pairs.length && allConnected; k++) {
+      if (!state.edges.has(edgeKey(pairs[k][0], pairs[k][1]))) allConnected = false;
+    }
     if (allConnected) {
-      for (var i = 0; i < ids.length; i++) {
-        for (var j = i + 1; j < ids.length; j++) {
-          removeEdge(ids[i], ids[j]);
-        }
-      }
+      for (var k = 0; k < pairs.length; k++) removeEdge(pairs[k][0], pairs[k][1]);
     } else {
-      for (var i = 0; i < ids.length; i++) {
-        for (var j = i + 1; j < ids.length; j++) {
-          addEdge(ids[i], ids[j]);
-        }
-      }
+      for (var k = 0; k < pairs.length; k++) addEdge(pairs[k][0], pairs[k][1]);
     }
     state.coloringStatus = 'UNCHECKED';
     render();
@@ -739,6 +771,59 @@
     state.selection.clear();
     if (state.coloringStatus === 'INVALID') state.coloringStatus = 'UNCHECKED';
     statsHistory = [];
+    render();
+  }
+
+  function cleanUpSelected() {
+    if (state.selection.size === 0) return;
+    saveUndo();
+    var h = LATTICE_SPACING;
+    var sqrt3_2 = Math.sqrt(3) / 2;
+    var ox = latticeOrigin.x;
+    var oy = latticeOrigin.y;
+
+    // For each selected node, collect candidate lattice points sorted by distance
+    var candidates = [];
+    state.selection.forEach(function (id) {
+      var n = getNodeById(id);
+      if (!n) return;
+      var rx = n.x - ox;
+      var ry = n.y - oy;
+      // Lattice basis: e1 = (h, 0), e2 = (h/2, h*sqrt3_2)
+      var n2f = ry / (h * sqrt3_2);
+      var n1f = rx / h - n2f / 2;
+      var ci = Math.round(n1f);
+      var cj = Math.round(n2f);
+      var snaps = [];
+      for (var di = -2; di <= 2; di++) {
+        for (var dj = -2; dj <= 2; dj++) {
+          var i = ci + di, j = cj + dj;
+          var px = ox + i * h + j * h / 2;
+          var py = oy + j * h * sqrt3_2;
+          var dist = Math.hypot(n.x - px, n.y - py);
+          snaps.push({ i: i, j: j, x: px, y: py, dist: dist });
+        }
+      }
+      snaps.sort(function (a, b) { return a.dist - b.dist; });
+      candidates.push({ node: n, snaps: snaps });
+    });
+
+    // Greedy assignment: snap the most-constrained node first (nearest snap distance smallest)
+    candidates.sort(function (a, b) { return a.snaps[0].dist - b.snaps[0].dist; });
+    var used = new Set();
+    for (var k = 0; k < candidates.length; k++) {
+      var cand = candidates[k];
+      for (var s = 0; s < cand.snaps.length; s++) {
+        var snap = cand.snaps[s];
+        var key = snap.i + ',' + snap.j;
+        if (!used.has(key)) {
+          used.add(key);
+          cand.node.x = snap.x;
+          cand.node.y = snap.y;
+          break;
+        }
+      }
+    }
     render();
   }
 
@@ -927,6 +1012,104 @@
     }
   }
 
+  // --- Context menu ---
+  var contextMenuEl = null;
+
+  function closeContextMenu() {
+    if (contextMenuEl && contextMenuEl.parentNode) {
+      contextMenuEl.parentNode.removeChild(contextMenuEl);
+    }
+    contextMenuEl = null;
+  }
+
+  function buildContextMenuItems() {
+    var hasSel = state.selection.size > 0;
+    var items = [];
+
+    // q action — varies by display
+    if (state.display === 'COLORS') {
+      items.push({ label: 'Cycle color', key: 'q', action: cycleColorSelected, enabled: hasSel });
+    } else if (state.display === 'STATE') {
+      items.push({ label: 'Toggle spin', key: 'q', action: toggleSpinSelected, enabled: hasSel });
+    } else if (state.display === 'MODEL') {
+      items.push({ label: 'Edit values', key: 'q', action: openEntryMode, enabled: state.edges.size > 0 || state.nodes.length > 0 });
+    }
+    items.push({ label: 'Connect', key: 'w', action: toggleConnectSelected, enabled: hasSel });
+    items.push({ label: 'Hide', key: 'e', action: toggleHideSelected, enabled: hasSel });
+    items.push({ label: 'Clamp', key: 'r', action: toggleClampSelected, enabled: hasSel });
+    items.push({ label: 'Clean up', key: 'a', action: cleanUpSelected, enabled: hasSel });
+    items.push({ label: 'Delete', key: 'd', action: deleteSelected, enabled: hasSel });
+
+    if (state.display === 'STATE') {
+      items.push({ separator: true });
+      items.push({ label: 'Update', key: '→', action: glauberUpdate, enabled: true });
+      items.push({ label: 'Random init', key: '!', action: randomizeSpins, enabled: true });
+      items.push({ label: 'Wipe stats', key: '@', action: wipeStats, enabled: true });
+    }
+
+    items.push({ separator: true });
+    items.push({ label: 'Deselect', key: 'Esc', action: clearSelection, enabled: hasSel });
+    items.push({ label: 'Undo', key: '⌃Z', action: restoreUndo, enabled: undoSnapshot !== null });
+
+    return items;
+  }
+
+  function showContextMenu(x, y) {
+    closeContextMenu();
+    var menu = document.createElement('div');
+    menu.id = 'context-menu';
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+
+    var items = buildContextMenuItems();
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (it.separator) {
+        var sep = document.createElement('div');
+        sep.className = 'menu-sep';
+        menu.appendChild(sep);
+        continue;
+      }
+      var row = document.createElement('div');
+      row.className = 'menu-item' + (it.enabled ? '' : ' disabled');
+      var label = document.createElement('span');
+      label.textContent = it.label;
+      var key = document.createElement('span');
+      key.className = 'menu-key';
+      key.textContent = it.key;
+      row.appendChild(label);
+      row.appendChild(key);
+      if (it.enabled) {
+        (function (action) {
+          row.addEventListener('mousedown', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            closeContextMenu();
+            action();
+          });
+        })(it.action);
+      }
+      menu.appendChild(row);
+    }
+
+    document.body.appendChild(menu);
+
+    // Position adjustment if menu goes off screen
+    var rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+      menu.style.left = (window.innerWidth - rect.width - 4) + 'px';
+    }
+    if (rect.bottom > window.innerHeight) {
+      menu.style.top = (window.innerHeight - rect.height - 4) + 'px';
+    }
+    contextMenuEl = menu;
+  }
+
+  function onContextMenu(e) {
+    e.preventDefault();
+    showContextMenu(e.clientX, e.clientY);
+  }
+
   function onKeyDown(e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
 
@@ -977,6 +1160,9 @@
         e.preventDefault();
         toggleClampSelected();
         break;
+      case 'a':
+        cleanUpSelected();
+        break;
       case 'd':
       case 'Backspace':
       case 'Delete':
@@ -1006,7 +1192,15 @@
         }
         break;
       case 'Escape':
-        clearSelection();
+        if (contextMenuEl) closeContextMenu();
+        else clearSelection();
+        break;
+      case ' ':
+        e.preventDefault();
+        if (!showLattice) {
+          showLattice = true;
+          render();
+        }
         break;
     }
   }
@@ -1049,15 +1243,22 @@
   function initGraph() {
     var cx = canvas.width / 2;
     var cy = canvas.height / 2;
-    var spacing = 140;
+    var h = LATTICE_SPACING;
+    var rowH = h * Math.sqrt(3) / 2; // triangular-lattice row spacing
 
-    // 3 white nodes in top row
+    // Fix the lattice origin so both rows of the initial graph are real
+    // lattice rows and the graph is visually centered on the canvas.
+    latticeOrigin = { x: cx, y: cy - rowH / 2 };
+
+    // Whites: centered (unstaggered) row at n2 = 0, n1 in {-1, 0, 1}
+    var whiteY = latticeOrigin.y;
+    var whiteXs = [latticeOrigin.x - h, latticeOrigin.x, latticeOrigin.x + h];
     var whites = [];
     for (var i = 0; i < 3; i++) {
       var node = {
         id: state.nextNodeId++,
-        x: cx + (i - 1) * spacing,
-        y: cy - 90,
+        x: whiteXs[i],
+        y: whiteY,
         color: 0,
         spin: 1,
         bias: 0.0,
@@ -1069,13 +1270,15 @@
       whites.push(node);
     }
 
-    // 2 black nodes in bottom row
+    // Blacks: staggered row at n2 = 1, n1 in {-1, 0}
+    var blackY = latticeOrigin.y + rowH;
+    var blackXs = [latticeOrigin.x - h / 2, latticeOrigin.x + h / 2];
     var blacks = [];
     for (var i = 0; i < 2; i++) {
       var node = {
         id: state.nextNodeId++,
-        x: cx + (i - 0.5) * spacing,
-        y: cy + 90,
+        x: blackXs[i],
+        y: blackY,
         color: 1,
         spin: 1,
         bias: 0.0,
@@ -1102,6 +1305,17 @@
   canvas.height = window.innerHeight;
   initGraph();
   canvas.addEventListener('mousedown', onMouseDown);
+  canvas.addEventListener('contextmenu', onContextMenu);
   document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('keyup', function (e) {
+    if (e.key === ' ' && showLattice) {
+      showLattice = false;
+      render();
+    }
+  });
+  // Close context menu on any mousedown outside it
+  document.addEventListener('mousedown', function (e) {
+    if (contextMenuEl && !contextMenuEl.contains(e.target)) closeContextMenu();
+  }, true);
   render();
 })();

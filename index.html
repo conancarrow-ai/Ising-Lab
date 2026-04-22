@@ -93,6 +93,54 @@
       color: #fff;
       text-align: center;
     }
+
+    #context-menu {
+      position: fixed;
+      background: rgba(20, 20, 20, 0.95);
+      color: #fff;
+      font: 12px/1.4 monospace;
+      padding: 4px 0;
+      border-radius: 4px;
+      border: 1px solid #555;
+      z-index: 200;
+      min-width: 160px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    }
+
+    .menu-item {
+      padding: 4px 14px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .menu-item:hover {
+      background: #ff6600;
+    }
+
+    .menu-item.disabled {
+      color: #777;
+      cursor: default;
+    }
+
+    .menu-item.disabled:hover {
+      background: transparent;
+    }
+
+    .menu-key {
+      color: #ff9944;
+    }
+
+    .menu-item.disabled .menu-key {
+      color: #555;
+    }
+
+    .menu-sep {
+      height: 1px;
+      background: #444;
+      margin: 4px 0;
+    }
   </style>
 </head>
 <body>
@@ -135,6 +183,7 @@
     w — Connect<br>
     e — Hide<br>
     r — Clamp<br>
+    a — Clean up<br>
     d — Delete<br>
     <span id="update-label" style="display:none">&rarr; — Update<br>! — Random init<br>@ — Wipe</span>
   </div>
